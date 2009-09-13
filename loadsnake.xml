@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+<screensaver name="loadsnake" _label="LoadSnake">
+
+  <command arg="-root"/>
+
+  <number id="delay" type="slider" arg="-delay %"
+          _label="Speed" _low-label="Slow" _high-label="Fast"
+          low="0" high="300000" default="200000"
+          convert="invert"/>
+
+  <number id="subdivision" type="spinbutton" arg="-subdivision %"
+          _label="Subdivision"
+          low="5" high="64" default="30"/>
+
+  <number id="border" type="spinbutton" arg="-border %"
+          _label="Border"
+          low="0" high="5" default="1"/>
+
+  <number id="ncolors" type="spinbutton" arg="-ncolors %"
+            _label="Number of Colors" low="1" high="512" default="128"/>
+
+  <string id="fg" _label="Start color" arg="-fg %" default="#FF0000"/>
+  <string id="bg" _label="End color" arg="-bg %" default="#000000"/>
+
+  <_description>
+Draws a snake that grows longer as the machine load increases.
+Taken from the classic Novell Netware's console screensaver.
+
+Written by Cosimo Streppone; 2007.
+  </_description>
+</screensaver>
