@@ -1,10 +1,16 @@
 /*
  * $Header: /my/cvsroot/xscreensaver/loadsnake/loadsnake.c,v 1.4 2007/02/28 21:46:31 cosimo Exp $
  *
- * xscreensaver loadsnake hack
+ * XScreensaver loadsnake hack
  * 
  * Displays system load like the old classic Novell Netware's console screensaver.
  * Shamelessly hacked from popsquares.c by Levi Burton.
+ *
+ * TODO
+ * - Snakes collision detection
+ * - Different color for every cpu, like the Netware real screensaver
+ * - Better snake movement. Now sometimes they hang on themselves... :-)
+ * - Revise the cpu-load/snake-length ratio...
  *
  * Copyright (c) 2007 Cosimo Streppone <cosimo@cpan.org>
  *
@@ -34,6 +40,7 @@ typedef struct _snake {
   int length;
   int direction;
   int color;
+  int stay_straight;
 } snake;
 
 struct state {
@@ -142,8 +149,8 @@ loadsnake_getcpuload (void *closure, int cpu)
     else if(load > 20)   load /= 3;
     else load /= 2;
 
-    /* Minimum load is 2% */
-    if( load < 2 ) load = 2;
+    /* Minimum snake length is 3 */
+    if( load < 3 ) load = 3;
 
     return(load);
 }
@@ -244,6 +251,7 @@ loadsnake_init (Display *dpy, Window window)
       s->direction = ((random() % 9) >> 1) << 1;
       s->length = 1;
       s->color = 64;
+      s->stay_straight = 3;
       /* fprintf (stderr, "Snake %d starting at %d,%d dir %d length %d\n", s->cpu, s->x, s->y, s->direction, s->length); */
   }
 
@@ -318,7 +326,7 @@ loadsnake_move (void *closure, snake *s)
         y = st->gh - 1;
         dir += 4;
     }
-    else
+    else if( s->stay_straight == 0 )
     {
         /* Slightly change snake heading */
         int rnd = random() % 128;
@@ -330,6 +338,11 @@ loadsnake_move (void *closure, snake *s)
             dir++;
         else if(rnd == 2)
             dir--;
+        s->stay_straight = 2;
+    }
+    else
+    {
+        s->stay_straight--;
     }
 
     if(dir < 0) dir = -dir;
@@ -362,14 +375,13 @@ loadsnake_clear (struct state *st)
                             st->border ? st->sw - st->border : st->sw, 
                             st->border ? st->sh - st->border : st->sh);
         }
-
 }
 
 static void
 loadsnake_drawsnake (struct state *st, snake *s)
 {
     int c, n;
-    c = 64;
+    c = st->ncolors >> 4;
     /* printf("Drawing snake from 0 to %d\n", s->length); */
     for(n = s->length - 1; n >= 0; n--)
     {
@@ -378,7 +390,7 @@ loadsnake_drawsnake (struct state *st, snake *s)
         XFillRectangle (st->dpy, st->b, st->gc, st->sw * s->x[n], st->sh * s->y[n],
                         st->border ? st->sw - st->border : st->sw, 
                         st->border ? st->sh - st->border : st->sh);
-        c += st->ncolors / s->length / 4;
+        c += st->ncolors / s->length / 2;
     }
 }
 
