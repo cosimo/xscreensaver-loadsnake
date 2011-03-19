@@ -7,12 +7,11 @@
  * Shamelessly hacked from popsquares.c by Levi Burton.
  *
  * TODO
+ * - Improve the code for different colors sets by CPU
  * - Snakes collision detection
- * - Different color for every cpu, like the Netware real screensaver
  * - Better snake movement. Now sometimes they hang on themselves... :-)
- * - Revise the cpu-load/snake-length ratio...
  *
- * Copyright (c) 2007 Cosimo Streppone <cosimo@cpan.org>
+ * Copyright (c) 2007-2011 Cosimo Streppone <cosimo@cpan.org>
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -60,6 +59,7 @@ struct state {
     XWindowAttributes xgwa;
     GC gc; 
     XColor *colors;
+    XColor *gcolors;
     snake *snakes;
     Pixmap b, ba, bb;
 #ifdef HAVE_DOUBLE_BUFFER_EXTENSION
@@ -109,20 +109,16 @@ loadsnake_getcpuload (void *closure, int cpu)
     src[3] = '0' + cpu;
     src[4] = 0;
 
-    if( NULL != (f = fopen ("/proc/stat", "r")) )
-    {
-        while (!feof(f) && load==0)
-        {
+    if (NULL != (f = fopen ("/proc/stat", "r"))) {
+        while (! feof(f) && load == 0) {
             fgets (line, 98, f);
-            if( strncasecmp (src, line, 4) == 0 )
-            {
+            if (strncasecmp(src, line, 4) == 0) {
                 p_usr  = st->usr[cpu];
                 p_nice = st->nice[cpu];
                 p_sys  = st->sys [cpu];
                 p_idle = st->idle[cpu];
 
-                if( 4 == sscanf( &line[5], "%d %d %d %d", &(st->usr[cpu]), &(st->nice[cpu]), &(st->sys[cpu]), &(st->idle[cpu])) )
-                {
+                if (4 == sscanf( &line[5], "%d %d %d %d", &(st->usr[cpu]), &(st->nice[cpu]), &(st->sys[cpu]), &(st->idle[cpu]))) {
                     /* printf("Matched: %d\n", matched); */
                     /* printf("CPU Line [%s", line); */
                     load = st->usr[cpu]  - p_usr
@@ -226,6 +222,7 @@ loadsnake_init (Display *dpy, Window window)
   st->gc = XCreateGC (st->dpy, st->window, GCForeground|GCBackground, &gcv);
 
   st->colors = (XColor *) calloc (st->ncolors, sizeof(XColor));
+  st->gcolors = (XColor *) calloc (st->ncolors, sizeof(XColor));
   st->snakes = (snake *) calloc (st->cpus, sizeof(snake));
 
   rgb_to_hsv (fg.red, fg.green, fg.blue, &h1, &s1, &v1);
@@ -233,10 +230,19 @@ loadsnake_init (Display *dpy, Window window)
   make_color_ramp (st->dpy, st->xgwa.colormap,
                    h2, s2, v2,
                    h1, s1, v1,
-                   st->colors, &st->ncolors,  /* would this be considered a value-result argument? */
+                   st->colors, &st->ncolors,
                    True, True, False);
-  if (st->ncolors < 2)
-  {
+
+  rgb_to_hsv (0, 0, 40000, &h1, &s1, &v1);
+  rgb_to_hsv (0, 0, 0, &h2, &s2, &v2);
+
+  make_color_ramp (st->dpy, st->xgwa.colormap,
+                   h2, s2, v2,
+                   h1, s1, v1,
+                   st->gcolors, &st->ncolors,
+                   True, True, False);
+
+  if (st->ncolors < 2) {
       fprintf (stderr, "%s: insufficient colors!\n", progname);
       exit (1);
   }
@@ -250,7 +256,7 @@ loadsnake_init (Display *dpy, Window window)
       s->y[0] = random() % st->subdivision;
       s->direction = ((random() % 9) >> 1) << 1;
       s->length = 1;
-      s->color = 64;
+      s->color = n % 2;   /* 2 color sets, red and green */
       s->stay_straight = 3;
       /* fprintf (stderr, "Snake %d starting at %d,%d dir %d length %d\n", s->cpu, s->x, s->y, s->direction, s->length); */
   }
@@ -380,13 +386,22 @@ loadsnake_clear (struct state *st)
 static void
 loadsnake_drawsnake (struct state *st, snake *s)
 {
+    XColor *snake_colors;
     int c, n;
+
     c = st->ncolors >> 4;
+
+    if (s->color == 0) 
+        snake_colors = st->colors;
+    else
+        snake_colors = st->gcolors;
+
     /* printf("Drawing snake from 0 to %d\n", s->length); */
     for(n = s->length - 1; n >= 0; n--)
     {
         /* printf("    draw pos (%d, %d)\n", s->x[n], s->y[n]); */
-        XSetForeground (st->dpy, st->gc, st->colors[c].pixel);
+        /* XSetForeground (st->dpy, st->gc, st->colors[c].pixel); */
+        XSetForeground (st->dpy, st->gc, snake_colors[c].pixel);
         XFillRectangle (st->dpy, st->b, st->gc, st->sw * s->x[n], st->sh * s->y[n],
                         st->border ? st->sw - st->border : st->sw, 
                         st->border ? st->sh - st->border : st->sh);
@@ -487,13 +502,13 @@ loadsnake_draw (Display *dpy, Window window, void *closure)
 
     /* Make snakes walk faster if load increases (as Netware's version) */
     n = loadsnake_getsystemload();
-    if(n > 50)
+    if(n > 10)
         st->delay = 10000;
-    else if(n > 20)
-        st->delay = 50000;
-    else if(n > 10)
-        st->delay = 100000;
     else if(n > 5)
+        st->delay = 50000;
+    else if(n > 2)
+        st->delay = 100000;
+    else if(n > 1)
         st->delay = 300000;
     else
         st->delay = 600000;
@@ -517,6 +532,9 @@ static void
 loadsnake_free (Display *dpy, Window window, void *closure)
 {
         struct state *st = (struct state *) closure;
+        free (st->colors);
+        free (st->gcolors);
+        free (st->snakes);
         free (st);
 }
 
