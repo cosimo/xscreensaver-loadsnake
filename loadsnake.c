@@ -22,6 +22,7 @@
  * implied warranty.
  */
 
+#include <assert.h>
 #include "screenhack.h"
 #include "colors.h"
 
@@ -29,7 +30,9 @@
 # include "xdbe.h"
 #endif /* HAVE_DOUBLE_BUFFER_EXTENSION */
 
-#define     SNAKE_MAX_LEN   30
+#define     SNAKE_MIN_LEN   5
+#define     SNAKE_MAX_LEN   64
+#define     SNAKE_TAIL_LEN  3
 #define     MAX_SNAKES      10
 #define     COLORSETS       8
 
@@ -116,10 +119,10 @@ loadsnake_getcpuload (void *closure, int cpu)
     src[3] = '0' + cpu;
     src[4] = 0;
 
-    if (NULL != (f=fopen("/proc/stat", "r"))) {
-        while (! feof(f) && load==0) {
+    if (NULL != (f = fopen("/proc/stat", "r"))) {
+        while (! feof(f) && 0 == load) {
             fgets (line, 98, f);
-            if (!strncasecmp(src, line, 4)) {
+            if (! strncasecmp(src, line, 4)) {
                 p_usr  = st->usr[cpu];
                 p_nice = st->nice[cpu];
                 p_sys  = st->sys [cpu];
@@ -133,7 +136,7 @@ loadsnake_getcpuload (void *closure, int cpu)
                          + st->sys[cpu]  - p_sys
                          + st->idle[cpu] - p_idle;
                     /* printf("Load is %d. Idle is %d\n", load, st->idle[cpu]-p_idle); */
-                    if (load == 0)
+                    if (0 == load)
                         load = 1;
                     load = (load - (st->idle[cpu] - p_idle)) * 100 / load;
                     /* printf("Load on cpu %d is %d%%\n", cpu, load); */
@@ -146,15 +149,12 @@ loadsnake_getcpuload (void *closure, int cpu)
     	fclose(f);
     }
 
-    if (load > 1000)     snake_len = load / 50;
-    else if (load > 200) snake_len = load / 10;
-    else if (load > 100) snake_len = load / 5;
-    else if (load > 20)  snake_len = load / 3;
-    else                 snake_len = load / 2; 
+    /* Grow snake exponentially with load:
+       max length is reached when load = 100 */
+    snake_len = load * load * SNAKE_MAX_LEN / 10000.0;
 
-    /* Minimum snake length is 3 */
-    if (snake_len < 3)
-        snake_len = 3;
+    if (snake_len < SNAKE_MIN_LEN)
+        snake_len = SNAKE_MIN_LEN;
 
     return (snake_len);
 }
@@ -166,7 +166,7 @@ loadsnake_getsystemload (void)
 {
     char load[10];
     float l1 = 0;
-    int l2   = 0;
+    int l2 = 0;
 
     FILE *f = fopen("/proc/loadavg", "r");
     if (f != NULL) {
@@ -178,10 +178,37 @@ loadsnake_getsystemload (void)
     else {
         l1 = 0;
     }
-    l1 *= 1000;
+    l1 *= 1000.0;
+
     l2 = (int) l1;
     l2 /= 1000;
-    return(l2);
+
+    return l2;
+}
+
+
+static XColor *
+make_colorset (struct state *st, const int *rgb) {
+
+    int h1, h2 = 0;
+    double s1, v1, s2, v2 = 0;
+    XColor *colset = (XColor *) calloc (st->ncolors, sizeof(XColor));
+
+    /* Start: always black background rgb(0,0,0), tail */
+    rgb_to_hsv(0, 0, 0, &h1, &s1, &v1);
+
+    /* Finish: foreground, head */
+    rgb_to_hsv(rgb[0], rgb[1], rgb[2], &h2, &s2, &v2);
+
+    make_color_ramp(
+        st->dpy, st->xgwa.colormap,
+        h1, s1, v1,
+        h2, s2, v2,
+        colset, &st->ncolors,
+        True, True, False
+    );
+
+    return colset;
 }
 
 
@@ -189,8 +216,6 @@ loadsnake_getsystemload (void)
 static XColor **
 init_colorsets (struct state *st)
 {
-    int h1, h2 = 0;
-    double s1, v1, s2, v2 = 0;
     int n;
     int rgb[COLORSETS][3] = {
         { 0xFFFF, 0,      0      }, /* 1st snake, red */
@@ -205,24 +230,11 @@ init_colorsets (struct state *st)
 
     XColor** colset = (XColor **) calloc (COLORSETS, sizeof(XColor *));
 
-    /* Always black background rgb(0,0,0) */
-    rgb_to_hsv(0, 0, 0, &h2, &s2, &v2);
-
-    for (n = 0; n < COLORSETS; n++) {
-        colset[n] = (XColor *) calloc (st->ncolors, sizeof(XColor));
-        rgb_to_hsv(rgb[n][0], rgb[n][1], rgb[n][2], &h1, &s1, &v1);
-        make_color_ramp(
-            st->dpy, st->xgwa.colormap,
-            h2, s2, v2,
-            h1, s1, v1,
-            colset[n], &st->ncolors,
-            True, True, False
-        );
-    }
+    for (n = 0; n < COLORSETS; n++)
+        colset[n] = make_colorset(st, rgb[n]);
 
     return colset;
 }
-
 
 /* Init XScreensaver module */
 static void *
@@ -284,7 +296,7 @@ loadsnake_init (Display *dpy, Window window)
         s->x[0] = random() % st->subdivision;
         s->y[0] = random() % st->subdivision;
         s->direction = ((random() % 9) >> 1) << 1;
-        s->length = 1;
+        s->length = SNAKE_MIN_LEN;
         s->color = n % COLORSETS;
         s->stay_straight = 3;
         /* fprintf (stderr, "Snake %d starting at %d,%d dir %d length %d\n", s->cpu, s->x, s->y, s->direction, s->length); */
@@ -394,36 +406,59 @@ static void
 loadsnake_clear (struct state *st)
 {
     int x = 0, y = 0;
-    for (y = 0; y < st->gh; y++) {
-        for (x = 0; x < st->gw; x++) {
-            XSetForeground (st->dpy, st->gc, st->colors[0][0].pixel);
+
+    XSetForeground (st->dpy, st->gc, st->colors[0][0].pixel);
+
+    for (y = 0; y < st->gh; y++)
+        for (x = 0; x < st->gw; x++)
             XFillRectangle (st->dpy, st->b, st->gc, st->sw * x, st->sh * y,
                             st->border ? st->sw - st->border : st->sw, 
                             st->border ? st->sh - st->border : st->sh);
-        }
-    }
 }
 
 static void
 loadsnake_drawsnake (struct state *st, snake *s)
 {
+    int i, n, body_col, tail_pos = 0;
     XColor *snake_colset;
-    int c, n;
 
     /* Select the colorset for this snake */
     snake_colset = st->colors[s->color];
 
-    c = st->ncolors >> 4;
-
     /* printf("Drawing snake from 0 to %d\n", s->length); */
-    for (n = s->length - 1; n >= 0; n--) {
-        /* printf("    draw pos (%d, %d)\n", s->x[n], s->y[n]); */
-        XSetForeground (st->dpy, st->gc, snake_colset[c].pixel);
-        XFillRectangle (st->dpy, st->b, st->gc, st->sw * s->x[n], st->sh * s->y[n],
-                        st->border ? st->sw - st->border : st->sw, 
-                        st->border ? st->sh - st->border : st->sh);
-        c += st->ncolors / s->length / 2;
+
+    /* Tail is always SNAKE_TAIL_LEN blocks long */
+    tail_pos = s->length - SNAKE_TAIL_LEN;
+
+    assert(SNAKE_TAIL_LEN < SNAKE_MIN_LEN);
+    assert(s->length >= SNAKE_MIN_LEN);
+    assert(tail_pos > 0);
+
+    /* Draw the snake tail with color gradient */
+    i = SNAKE_TAIL_LEN;
+    for (n = s->length - 1; n >= tail_pos; n--, i--) {
+        int grad_col = (st->ncolors >> 1) / (i + 1);
+        XSetForeground (st->dpy, st->gc, snake_colset[grad_col].pixel);
+        XFillRectangle (
+            st->dpy, st->b, st->gc, st->sw * s->x[n], st->sh * s->y[n],
+            st->border ? st->sw - st->border : st->sw, 
+            st->border ? st->sh - st->border : st->sh
+        );
     }
+
+    /* Use last color of the ramp (main color) to draw head and body */
+    body_col = st->ncolors >> 1;
+
+    /* Draw the snake head and body with primary color */
+    XSetForeground (st->dpy, st->gc, snake_colset[body_col].pixel);
+
+    for (n = tail_pos - 1; n >= 0; n--)
+        XFillRectangle (
+            st->dpy, st->b, st->gc, st->sw * s->x[n], st->sh * s->y[n],
+            st->border ? st->sw - st->border : st->sw, 
+            st->border ? st->sh - st->border : st->sh
+        );
+
 }
 
 /*
@@ -437,8 +472,7 @@ loadsnake_grow (void *closure, snake *s)
     int newlen = loadsnake_getcpuload(st, s->cpu);
     int len = s->length;
 
-    if(newlen > len)
-    {
+    if (newlen > len) {
         int x, y;
 
         x = s->x[len - 1];
@@ -446,8 +480,7 @@ loadsnake_grow (void *closure, snake *s)
 
         /* printf("Growing! Last pos is (%d, %d)\n", x, y); */
 
-        switch(s->direction)
-        {
+        switch(s->direction) {
             case 0: y--;      break;
             case 1: y--; x--; break;
             case 2:      x--; break;
@@ -460,7 +493,7 @@ loadsnake_grow (void *closure, snake *s)
 
         len++;
 
-        if(len >= SNAKE_MAX_LEN)
+        if (len >= SNAKE_MAX_LEN)
             len = SNAKE_MAX_LEN - 1;
 
         /* printf("Appending in pos (%d, %d)\n", x, y); */
@@ -468,11 +501,10 @@ loadsnake_grow (void *closure, snake *s)
         s->x[len] = x;
         s->y[len] = y;
     }
-    else if(newlen < len)
-    {
+    else if (newlen < len) {
         len--;
-        if(len < 2)
-            len = 2;
+        if (len < SNAKE_MIN_LEN)
+            len = SNAKE_MIN_LEN;
         s->x[len + 1] = 0;
         s->y[len + 1] = 0;
     }
@@ -491,8 +523,7 @@ loadsnake_draw (Display *dpy, Window window, void *closure)
     /* We shouldn't clear video area */
     loadsnake_clear(st);
 
-    for (n = 0; n < st->cpus; n++)
-    {
+    for (n = 0; n < st->cpus; n++) {
         snake *s = (snake *) &st->snakes[n];
         loadsnake_grow(st, s);
         /* printf("Snake %d grown at length %d\n", n, loadsnake_grow(st, s)); */
@@ -501,8 +532,7 @@ loadsnake_draw (Display *dpy, Window window, void *closure)
     }
 
 #ifdef HAVE_DOUBLE_BUFFER_EXTENSION
-    if (st->backb) 
-    {
+    if (st->backb) {
         XdbeSwapInfo info[1];
         info[0].swap_window = st->window;
         info[0].swap_action = XdbeUndefined;
@@ -510,8 +540,7 @@ loadsnake_draw (Display *dpy, Window window, void *closure)
     }
     else
 #endif /* HAVE_DOUBLE_BUFFER_EXTENSION */
-        if (st->dbuf)
-        {
+        if (st->dbuf) {
             XCopyArea (st->dpy, st->b, st->window, st->gc, 0, 0, 
                        st->xgwa.width, st->xgwa.height, 0, 0);
             st->b = (st->b == st->ba ? st->bb : st->ba);
@@ -519,16 +548,11 @@ loadsnake_draw (Display *dpy, Window window, void *closure)
 
     /* Make snakes walk faster if load increases (as Netware's version) */
     n = loadsnake_getsystemload();
-    if(n > 10)
+
+    /* The more the system is loaded, the faster the snakes */
+    st->delay = (int) 1.0 / (n + 1.0) * 500000.0;
+    if (st->delay < 10000)
         st->delay = 10000;
-    else if(n > 5)
-        st->delay = 50000;
-    else if(n > 2)
-        st->delay = 100000;
-    else if(n > 1)
-        st->delay = 300000;
-    else
-        st->delay = 600000;
 
     return st->delay;
 }
@@ -552,44 +576,43 @@ loadsnake_free (Display *dpy, Window window, void *closure)
         XColor **colset = st->colors;
         int n = COLORSETS;
 
-        while (n--) {
-            free (colset[n]);
-        }
+        while (n--)
+                free(colset[n]);
 
-        free (st->colors);
-        free (st->snakes);
-        free (st);
+        free(st->colors);
+        free(st->snakes);
+        free(st);
 }
 
 static const char *loadsnake_defaults [] = {
-  ".background: #000000",
-  ".foreground: #FF0000",
-  "*delay: 200000",
-  "*subdivision: 40",
-  "*border: 0",
-  "*ncolors: 128",
-  "*doubleBuffer: False",
+        ".background: #000000",
+        ".foreground: #FF0000",
+        "*delay: 200000",
+        "*subdivision: 40",
+        "*border: 0",
+        "*ncolors: 32",
+        "*doubleBuffer: False",
 #ifdef HAVE_DOUBLE_BUFFER_EXTENSION
-  "*useDBE: True",
-  "*useDBEClear: True",
+        "*useDBE: True",
+        "*useDBEClear: True",
 #endif /* HAVE_DOUBLE_BUFFER_EXTENSION */
-  0
+        0
 };
 
 static XrmOptionDescRec loadsnake_options [] = {
-  { "-fg", ".foreground", XrmoptionSepArg, 0},
-  { "-bg", ".background", XrmoptionSepArg, 0},
-  { "-delay",     ".delay", XrmoptionSepArg, 0 },
-  { "-subdivision", ".subdivision", XrmoptionSepArg, 0 },
-  { "-border", ".border", XrmoptionSepArg, 0},
-  { "-ncolors",   ".ncolors", XrmoptionSepArg, 0 },
-  { "-db",        ".doubleBuffer", XrmoptionNoArg, "True" },
-  { "-no-db",     ".doubleBuffer", XrmoptionNoArg, "False" },
-  { 0, 0, 0, 0 }
+        { "-fg", ".foreground", XrmoptionSepArg, 0},
+        { "-bg", ".background", XrmoptionSepArg, 0},
+        { "-delay",     ".delay", XrmoptionSepArg, 0 },
+        { "-subdivision", ".subdivision", XrmoptionSepArg, 0 },
+        { "-border", ".border", XrmoptionSepArg, 0},
+        { "-ncolors",   ".ncolors", XrmoptionSepArg, 0 },
+        { "-db",        ".doubleBuffer", XrmoptionNoArg, "True" },
+        { "-no-db",     ".doubleBuffer", XrmoptionNoArg, "False" },
+        { 0, 0, 0, 0 }
 };
 
 
 XSCREENSAVER_MODULE ("LoadSnake", loadsnake)
 
-/* vim: ts=4 sw=4 tw=0 et
+/* vim: ts=8 sw=8 tw=0 et
  */
